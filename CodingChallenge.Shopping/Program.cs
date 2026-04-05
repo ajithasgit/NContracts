@@ -1,15 +1,6 @@
-﻿// Ncontracts Code Challenge
-//
-//
-// Please take a look at the code below.
-// Even though the program runs and generates correct result, we consider the code to be bad.
-// For example, if we want to expand the Christmas discount to January or if we want to introduce a first responder discount, the code can get really messy.
-// We ask you to refactor the code so that it's easier to apply new changes to it.
-// Once done, please send me a link to your gists.
-
-
-using System;
+﻿using System;
 using System.Collections.Generic;
+using System.Linq;
 
 namespace CodingChallenge.Shopping
 {
@@ -32,7 +23,7 @@ namespace CodingChallenge.Shopping
                 new CartItem {ProductName = "Ornaments", Category = "Christmas", Price = 8m, Quantity = 15},
             };
 
-            var calculator = new GroceryStoreCheckoutCalculator();
+            var calculator = CreateCalculator();
             var total = calculator.Calculate(carts, new DateTime(2020, 11, 30));
             Console.WriteLine(total);
 
@@ -51,7 +42,7 @@ namespace CodingChallenge.Shopping
                 new CartItem {ProductName = "Red Wine", Category = "Food", Price = 25.99m, Quantity = 1}
             };
 
-            var calculator = new GroceryStoreCheckoutCalculator();
+            var calculator = CreateCalculator();
             var total = calculator.Calculate(carts, new DateTime(2020, 11, 30));
             Console.WriteLine(total);
 
@@ -59,75 +50,155 @@ namespace CodingChallenge.Shopping
             Console.WriteLine(seniorHourTotal);
         }
 
+        private GroceryStoreCheckoutCalculator CreateCalculator()
+        {
+            var rules = new List<ICartPricingRule>
+            {
+                new ChristmasPricingRule(),
+                new FoodPricingRule(),
+                new DefaultPricingRule()
+                // future: new FirstResponderDiscountRule(), new JanuarySaleRule(), etc.
+            };
+
+            return new GroceryStoreCheckoutCalculator(rules);
+        }
+    }
+
+    public interface ICartPricingRule
+    {
+        bool AppliesTo(CartItem item, DateTime checkoutDate);
+        decimal CalculateTotal(CartItem item, DateTime checkoutDate);
     }
 
     public class GroceryStoreCheckoutCalculator
     {
+        private readonly IReadOnlyList<ICartPricingRule> _rules;
+
+        public GroceryStoreCheckoutCalculator(IEnumerable<ICartPricingRule> rules)
+        {
+            _rules = rules.ToList();
+        }
+
         public decimal Calculate(List<CartItem> carts, DateTime checkOutDate)
         {
-            decimal itemTotal = 0m;
+            decimal total = 0m;
 
             foreach (var item in carts)
             {
-                if (item.Category == "Christmas")
+                if (string.IsNullOrWhiteSpace(item.Category))
                 {
-                    if (checkOutDate.Month == 12)
-                    {
-                        if (checkOutDate.Day < 15)
-                        {
-                            itemTotal += (item.Quantity * (item.Price - item.Price * (20m / 100m)));
-                        }
-                        else if (checkOutDate.Day <= 25)
-                        {
-                            itemTotal += (item.Quantity * (item.Price - item.Price * (60m / 100m)));
-                        }
-                        else
-                        {
-                            itemTotal += (item.Quantity * (item.Price - item.Price * (90m / 100m)));
-                        }
-                    }
-                    else
-                    {
-                        itemTotal += item.Quantity * item.Price;
-                    }
+                    // In real life: log or throw
+                    continue;
                 }
-                else if (item.Category == "Food")
+
+                var rule = _rules.FirstOrDefault(r => r.AppliesTo(item, checkOutDate));
+
+                if (rule == null)
                 {
-                    if (item.Weight != 0)
-                    {
-                        if (checkOutDate.TimeOfDay.Hours > 6 && checkOutDate.TimeOfDay.Hours <= 8)
-                        {
-                            //senior discount
-                            itemTotal += item.Weight * item.Price * 0.9m;
-                        }
-                        else
-                        {
-                            itemTotal += item.Weight * item.Price;
-                        }
-                    }
-                    else
-                    {
-                        if (checkOutDate.TimeOfDay.Hours > 6 && checkOutDate.TimeOfDay.Hours <= 8)
-                        {
-                            //senior discount
-                            itemTotal += item.Quantity * item.Price * 0.9m;
-                        }
-                        else
-                        {
-                            itemTotal += item.Quantity * item.Price;
-                        }
-                    }
+                    // Fallback if no rule matches
+                    rule = new DefaultPricingRule();
                 }
-                else if (item.Category == "")
-                {
-                    //oh no! this should not happen!
-                }
-                else
-                {
-                    itemTotal += item.Price * item.Quantity;
-                }
+
+                total += rule.CalculateTotal(item, checkOutDate);
             }
-            return itemTotal;
+
+            return total;
+        }
+    }
+
+    public class ChristmasPricingRule : ICartPricingRule
+    {
+        public bool AppliesTo(CartItem item, DateTime checkoutDate)
+        {
+            return item.Category == "Christmas";
+        }
+
+        public decimal CalculateTotal(CartItem item, DateTime checkoutDate)
+        {
+            var quantity = GetEffectiveQuantity(item);
+
+            if (checkoutDate.Month != 12)
+            {
+                return quantity * item.Price;
+            }
+
+            var discountPercent = GetChristmasDiscountPercentage(checkoutDate);
+            var discountedPrice = ApplyPercentageDiscount(item.Price, discountPercent);
+
+            return quantity * discountedPrice;
+        }
+
+        private decimal GetChristmasDiscountPercentage(DateTime date)
+        {
+            if (date.Day < 15)
+                return 20m;
+
+            if (date.Day <= 25)
+                return 60m;
+
+            return 90m;
+        }
+
+        private decimal GetEffectiveQuantity(CartItem item)
+        {
+            return item.Weight > 0 ? item.Weight : item.Quantity;
+        }
+
+        private decimal ApplyPercentageDiscount(decimal amount, decimal percentage)
+        {
+            return amount - amount * (percentage / 100m);
+        }
+    }
+
+    public class FoodPricingRule : ICartPricingRule
+    {
+        public bool AppliesTo(CartItem item, DateTime checkoutDate)
+        {
+            return item.Category == "Food";
+        }
+
+        public decimal CalculateTotal(CartItem item, DateTime checkoutDate)
+        {
+            var quantity = GetEffectiveQuantity(item);
+            var baseTotal = quantity * item.Price;
+
+            if (IsSeniorHour(checkoutDate))
+            {
+                return ApplyPercentageDiscount(baseTotal, 10m);
+            }
+
+            return baseTotal;
+        }
+
+        private bool IsSeniorHour(DateTime checkOutDate)
+        {
+            var hour = checkOutDate.TimeOfDay.Hours;
+            return hour > 6 && hour <= 8;
+        }
+
+        private decimal GetEffectiveQuantity(CartItem item)
+        {
+            return item.Weight > 0 ? item.Weight : item.Quantity;
+        }
+
+        private decimal ApplyPercentageDiscount(decimal amount, decimal percentage)
+        {
+            return amount - amount * (percentage / 100m);
+        }
+    }
+
+    public class DefaultPricingRule : ICartPricingRule
+    {
+        public bool AppliesTo(CartItem item, DateTime checkoutDate)
+        {
+            // fallback rule – applies when nothing else does
+            return true;
+        }
+
+        public decimal CalculateTotal(CartItem item, DateTime checkoutDate)
+        {
+            var quantity = item.Weight > 0 ? item.Weight : item.Quantity;
+            return quantity * item.Price;
         }
     }
 
@@ -137,7 +208,6 @@ namespace CodingChallenge.Shopping
         public decimal Price { get; set; }
         public int Quantity { get; set; }
         public string Category { get; set; }
-
         public decimal Weight { get; set; }
     }
 }
